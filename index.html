@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+
+<html>
+<head>
+<meta charset="utf-8">
+<title>경기과학고등학교</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+
+<style>
+body {
+  margin:0;
+  display:flex;
+  flex-direction:column;
+  height:100vh;
+  background:#111;
+  color:white;
+  font-family:sans-serif;
+}
+.logo-control {
+  z-index: 1000;
+}
+
+/* 상단 */
+#topbar {
+  height:50px;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  padding:10px;
+  background:#1a1a1a;
+}
+
+/* 메인 */
+#main {
+  display:flex;
+  flex:1;
+  min-height:0;
+}
+
+/* 지도 */
+#map {
+  flex:1;
+}
+
+/* 사이드바 */
+#sidebar {
+  width:300px;
+  background:#1e1e1e;
+  padding:10px;
+  display:flex;
+  flex-direction:column;
+  min-height:0;
+}
+
+/* 🔥 랭킹만 스크롤 */
+#listContainer {
+  flex:1;
+  overflow-y:auto;
+  min-height:0;
+}
+
+/* 스크롤 */
+#listContainer::-webkit-scrollbar {
+  width:6px;
+}
+#listContainer::-webkit-scrollbar-thumb {
+  background:#555;
+  border-radius:3px;
+}
+
+/* 랭킹 카드 */
+.rank {
+  background:#2a2a2a;
+  margin-bottom:10px;
+  padding:10px;
+  border-radius:10px;
+}
+
+/* 진행률 */
+.bar {
+  height:10px;
+  background:#444;
+  border-radius:5px;
+  margin-top:5px;
+}
+.fill {
+  height:100%;
+  background:#4caf50;
+  border-radius:5px;
+}
+</style>
+
+</head>
+
+<body>
+
+<div id="topbar">
+  <div> &nbsp; GSHS WALK (http://gswalk.kro.kr)</div>
+  <div id="status">불러오는 중...</div>
+</div>
+
+<div id="main">
+  <div id="map"></div>
+
+  <div id="sidebar">
+    <h3>🏆 Ranking</h3>
+    <div id="listContainer">
+      <div id="list"></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+<script>
+const API_URL = "https://script.google.com/macros/s/AKfycbzEZrWUuOMZ3u0qcXI8jJ47gkpDtW4NehZC0dHfBATG-v2ouhDCOpdFPG7sm0U_3oBRZw/exec";
+
+const seoul = [37.5665, 126.9780];
+const jeju = [33.4996, 126.5312];
+const TOTAL_DISTANCE = 480;
+
+const map = L.map('map').setView([35.5,126.5],7);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png')
+.addTo(map);
+
+L.polyline([seoul,jeju],{color:'red'}).addTo(map);
+
+let players = [];
+let layers = [];
+
+/* 🔥 색상 (연한색 방지) */
+function randomColor(){
+  const h = Math.floor(Math.random() * 360);
+  const s = 70 + Math.random() * 20;
+  const l = 35 + Math.random() * 15;
+  return `hsl(${h}, ${s}%, ${l}%)`;
+}
+
+/* 위치 계산 */
+function interpolate(p){
+  return [
+    seoul[0] + (jeju[0]-seoul[0])*p,
+    seoul[1] + (jeju[1]-seoul[1])*p
+  ];
+}
+
+/* 데이터 불러오기 */
+async function loadData(){
+  try{
+    const res = await fetch(API_URL);
+    const data = await res.json();
+
+    players = data.players.map(p => ({
+      ...p,
+      color: randomColor()
+    }));
+
+    render();
+    document.getElementById("status").innerText = "업데이트 완료";
+  }catch(e){
+    document.getElementById("status").innerText = "불러오기 실패";
+  }
+}
+
+/* 🔥 렌더 */
+function render(){
+
+  /* 기존 제거 */
+  layers.forEach(l => map.removeLayer(l));
+  layers = [];
+
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  players.sort((a,b)=>b.distance - a.distance);
+
+  /* 🔥 법선 벡터 계산 */
+  const dx = jeju[1] - seoul[1];
+  const dy = jeju[0] - seoul[0];
+  const len = Math.sqrt(dx*dx + dy*dy);
+
+  const nx = -dy / len;
+  const ny = dx / len;
+
+  players.forEach((p,i)=>{
+
+    const progress = p.distance / TOTAL_DISTANCE;
+    const pos = interpolate(progress);
+
+    /* 점 */
+    const point = L.circleMarker(pos,{
+      radius:4,
+      color:p.color,
+      fillColor:p.color,
+      fillOpacity:0.9
+    }).addTo(map);
+
+    layers.push(point);
+
+    /* 🔥 좌우 분산 */
+    const side = i % 2 === 0 ? 1 : -1;
+
+    /* 🔥 거리 증가 (너무 멀어지지 않게 제한) */
+    const offset = Math.min(1.5, 0.3 + i * 0.12);
+
+    /* 🔥 법선 방향 이동 */
+    const labelPos = [
+      pos[0] + ny * offset * side,
+      pos[1] + nx * offset * side
+    ];
+
+    /* 선 */
+    const line = L.polyline([pos, labelPos],{
+      color:p.color,
+      weight:1,
+      opacity:0.8
+    }).addTo(map);
+
+    layers.push(line);
+
+    /* 라벨 */
+    const label = L.marker(labelPos,{
+      icon: L.divIcon({
+        className:'',
+        html:`<div style="
+          font-size:12px;
+          font-weight:bold;
+          color:${p.color};
+          white-space:nowrap;
+
+          text-shadow:
+            -1px -1px 0 #000,
+             1px -1px 0 #000,
+            -1px  1px 0 #000,
+             1px  1px 0 #000;
+        ">${p.name}</div>`
+      })
+    }).addTo(map);
+
+    layers.push(label);
+
+    /* 랭킹 */
+    let medal="";
+    if(i==0) medal="🥇";
+    else if(i==1) medal="🥈";
+    else if(i==2) medal="🥉";
+
+    const div = document.createElement("div");
+    div.className="rank";
+
+    div.innerHTML = `
+      ${medal} ${p.name}<br>
+      ${Math.floor(p.distance)} km (${Math.floor(progress*100)}%)
+      <div class="bar">
+        <div class="fill" style="width:${progress*100}%"></div>
+      </div>
+    `;
+
+    list.appendChild(div);
+  });
+}
+
+/* 자동 갱신 */
+setInterval(loadData, 5000);
+
+/* 시작 */
+loadData();
+
+const logoControl = L.control({ position: 'bottomleft' });
+
+logoControl.onAdd = function (map) {
+  const div = L.DomUtil.create('div', 'logo-control');
+
+  div.innerHTML = `
+    <img src="logo.png" style="
+      width:400px;
+      opacity:0.9;
+    ">
+  `;
+
+  return div;
+};
+
+logoControl.addTo(map);
+</script>
+
+</body>
+</html>
