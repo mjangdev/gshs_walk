@@ -21,7 +21,6 @@ body {
   z-index: 1000;
 }
 
-/* 상단 */
 #topbar {
   height:50px;
   display:flex;
@@ -31,19 +30,16 @@ body {
   background:#1a1a1a;
 }
 
-/* 메인 */
 #main {
   display:flex;
   flex:1;
   min-height:0;
 }
 
-/* 지도 */
 #map {
   flex:1;
 }
 
-/* 사이드바 */
 #sidebar {
   width:300px;
   background:#1e1e1e;
@@ -53,14 +49,12 @@ body {
   min-height:0;
 }
 
-/* 🔥 랭킹만 스크롤 */
 #listContainer {
   flex:1;
   overflow-y:auto;
   min-height:0;
 }
 
-/* 스크롤 */
 #listContainer::-webkit-scrollbar {
   width:6px;
 }
@@ -69,7 +63,6 @@ body {
   border-radius:3px;
 }
 
-/* 랭킹 카드 */
 .rank {
   background:#2a2a2a;
   margin-bottom:10px;
@@ -77,7 +70,6 @@ body {
   border-radius:10px;
 }
 
-/* 진행률 */
 .bar {
   height:10px;
   background:#444;
@@ -116,21 +108,41 @@ body {
 <script>
 const API_URL = "https://script.google.com/macros/s/AKfycbzEZrWUuOMZ3u0qcXI8jJ47gkpDtW4NehZC0dHfBATG-v2ouhDCOpdFPG7sm0U_3oBRZw/exec";
 
-const seoul = [37.5665, 126.9780];
-const jeju = [33.4996, 126.5312];
-const TOTAL_DISTANCE = 480;
+/* 🔥 경유지: 경기과학고 → 대전 → 광주 → 제주 */
+const waypoints = [
+  [37.3091, 127.0062], // 경기과학고등학교
+  [36.3504, 127.3845], // 대전
+  [35.1595, 126.8526], // 광주
+  [33.4996, 126.5312]  // 제주
+];
+
+const TOTAL_DISTANCE = 450;
+
+/* 🔥 라벨 배치 파라미터 (마음에 안 들면 이 값만 조절) */
+const H_OFFSET = 1.0;   // 경로로부터 수평 거리 (경도 단위)
+const MIN_GAP  = 0.22;  // 같은 면 내 라벨 최소 수직 간격 (위도 단위)
+
+/* 각 구간 길이 미리 계산 */
+const segmentLengths = [];
+let totalPathLength = 0;
+for (let i = 0; i < waypoints.length - 1; i++) {
+  const dx = waypoints[i+1][1] - waypoints[i][1];
+  const dy = waypoints[i+1][0] - waypoints[i][0];
+  const len = Math.sqrt(dx*dx + dy*dy);
+  segmentLengths.push(len);
+  totalPathLength += len;
+}
 
 const map = L.map('map').setView([35.5,126.5],7);
 
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png')
 .addTo(map);
 
-L.polyline([seoul,jeju],{color:'red'}).addTo(map);
+L.polyline(waypoints,{color:'red'}).addTo(map);
 
 let players = [];
 let layers = [];
 
-/* 🔥 색상 (연한색 방지) */
 function randomColor(){
   const h = Math.floor(Math.random() * 360);
   const s = 70 + Math.random() * 20;
@@ -138,15 +150,27 @@ function randomColor(){
   return `hsl(${h}, ${s}%, ${l}%)`;
 }
 
-/* 위치 계산 */
+/* 다중 구간 위치 계산 */
 function interpolate(p){
-  return [
-    seoul[0] + (jeju[0]-seoul[0])*p,
-    seoul[1] + (jeju[1]-seoul[1])*p
-  ];
+  if (p <= 0) return waypoints[0];
+  if (p >= 1) return waypoints[waypoints.length - 1];
+
+  const targetDist = p * totalPathLength;
+  let accumulated = 0;
+
+  for (let i = 0; i < segmentLengths.length; i++) {
+    if (accumulated + segmentLengths[i] >= targetDist) {
+      const segProgress = (targetDist - accumulated) / segmentLengths[i];
+      return [
+        waypoints[i][0] + (waypoints[i+1][0] - waypoints[i][0]) * segProgress,
+        waypoints[i][1] + (waypoints[i+1][1] - waypoints[i][1]) * segProgress
+      ];
+    }
+    accumulated += segmentLengths[i];
+  }
+  return waypoints[waypoints.length - 1];
 }
 
-/* 데이터 불러오기 */
 async function loadData(){
   try{
     const res = await fetch(API_URL);
@@ -164,63 +188,73 @@ async function loadData(){
   }
 }
 
-/* 🔥 렌더 */
-function render(){
+/* 🔥 한 면(좌 또는 우)에 라벨을 배치.
+   같은 면 내에서 위도 내림차순으로 들어오므로,
+   '직전 라벨보다 MIN_GAP 만큼 아래'로만 강제로 밀어주면
+   같은 면 라인끼리 절대 교차하지 않음 (수학적으로 보장). */
+function placeOnSide(side, dir){
+  let lastLat = Infinity;
+  return side.map(it => {
+    let labelLat = it.pos[0];
+    if (lastLat - labelLat < MIN_GAP) {
+      labelLat = lastLat - MIN_GAP;
+    }
+    lastLat = labelLat;
+    const labelLng = it.pos[1] + dir * H_OFFSET;
+    return { ...it, labelPos: [labelLat, labelLng] };
+  });
+}
 
-  /* 기존 제거 */
+function render(){
   layers.forEach(l => map.removeLayer(l));
   layers = [];
 
   const list = document.getElementById("list");
   list.innerHTML = "";
 
-  players.sort((a,b)=>b.distance - a.distance);
+  players.sort((a,b) => b.distance - a.distance);
 
-  /* 🔥 법선 벡터 계산 */
-  const dx = jeju[1] - seoul[1];
-  const dy = jeju[0] - seoul[0];
-  const len = Math.sqrt(dx*dx + dy*dy);
-
-  const nx = -dy / len;
-  const ny = dx / len;
-
-  players.forEach((p,i)=>{
-
+  /* 1단계: 점 위치 계산 */
+  const items = players.map((p, rank) => {
     const progress = p.distance / TOTAL_DISTANCE;
     const pos = interpolate(progress);
+    return { p, rank, progress, pos };
+  });
 
-    /* 점 */
+  /* 🔥 2단계: 위도 내림차순으로 정렬 후 좌우 교대 배정.
+     이렇게 하면 양쪽 면이 지리적으로 골고루 분산되고,
+     각 면 안에서 자동으로 위도순이 됨. */
+  const byLat = [...items].sort((a,b) => b.pos[0] - a.pos[0]);
+  const rightSide = [];
+  const leftSide  = [];
+  byLat.forEach((it, i) => {
+    if (i % 2 === 0) rightSide.push(it);
+    else             leftSide.push(it);
+  });
+
+  /* 3단계: 각 면에 라벨 배치 (수직 간격 강제) */
+  const placedRight = placeOnSide(rightSide,  1);
+  const placedLeft  = placeOnSide(leftSide,  -1);
+
+  /* 4단계: 그리기 */
+  [...placedRight, ...placedLeft].forEach(it => {
+    const { p, pos, labelPos } = it;
+
     const point = L.circleMarker(pos,{
       radius:4,
       color:p.color,
       fillColor:p.color,
       fillOpacity:0.9
     }).addTo(map);
-
     layers.push(point);
 
-    /* 🔥 좌우 분산 */
-    const side = i % 2 === 0 ? 1 : -1;
-
-    /* 🔥 거리 증가 (너무 멀어지지 않게 제한) */
-    const offset = Math.min(1.5, 0.3 + i * 0.12);
-
-    /* 🔥 법선 방향 이동 */
-    const labelPos = [
-      pos[0] + ny * offset * side,
-      pos[1] + nx * offset * side
-    ];
-
-    /* 선 */
     const line = L.polyline([pos, labelPos],{
       color:p.color,
       weight:1,
       opacity:0.8
     }).addTo(map);
-
     layers.push(line);
 
-    /* 라벨 */
     const label = L.marker(labelPos,{
       icon: L.divIcon({
         className:'',
@@ -238,10 +272,13 @@ function render(){
         ">${p.name}</div>`
       })
     }).addTo(map);
-
     layers.push(label);
+  });
 
-    /* 랭킹 */
+  /* 5단계: 사이드바 랭킹 */
+  players.forEach((p,i)=>{
+    const progress = p.distance / TOTAL_DISTANCE;
+
     let medal="";
     if(i==0) medal="🥇";
     else if(i==1) medal="🥈";
@@ -262,10 +299,7 @@ function render(){
   });
 }
 
-/* 자동 갱신 */
 setInterval(loadData, 5000);
-
-/* 시작 */
 loadData();
 
 const logoControl = L.control({ position: 'bottomleft' });
